@@ -1,0 +1,13 @@
+{
+  "extends": ["oxlint:recommended"],
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2022": true
+  },
+  "rules": {
+    "eqeqeq": "warn"
+  }
+}
+
+

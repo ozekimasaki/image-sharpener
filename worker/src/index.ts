@@ -32,7 +32,11 @@ function withSecurityHeaders(response: Response): Response {
 export default {
   async fetch(request: Request, env: AssetsEnv): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === '/health') return withSecurityHeaders(new Response('ok'));
+    if (url.pathname === '/health') {
+      const res = withSecurityHeaders(new Response('ok'));
+      res.headers.set('Cache-Control', 'no-store');
+      return res;
+    }
     const resp = await env.ASSETS.fetch(request);
     const contentType = resp.headers.get('content-type') || '';
     const resWithHeaders = withSecurityHeaders(resp);

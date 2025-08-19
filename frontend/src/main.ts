@@ -14,6 +14,8 @@ type QueuedImage = {
   error?: string;
 };
 
+const DEFAULT_CONCURRENCY = Math.min(6, Math.max(1, navigator.hardwareConcurrency || 4));
+
 function getMimeType(format: OutputFormat): string {
   return format === 'webp'
     ? 'image/webp'
@@ -148,10 +150,10 @@ function renderItem(img: QueuedImage) {
   el.innerHTML = `
     <div class="thumbs">
       <figure>
-        <img src="${img.originalUrl}" alt="original preview" />
+        <img src="${img.originalUrl}" alt="元画像プレビュー" />
       </figure>
       <figure>
-        ${img.processedUrl ? `<img src="${img.processedUrl}" alt="processed preview" />` : '<div style="height:140px"></div>'}
+        ${img.processedUrl ? `<img src="${img.processedUrl}" alt="変換後プレビュー" />` : '<div style="height:140px"></div>'}
       </figure>
     </div>
     <div class="meta">
@@ -201,12 +203,33 @@ function updateDownloadAllState() {
   retryFailedBtn.disabled = !hasFailed;
 }
 
+function setGlobalBusy(busy: boolean) {
+  if (busy) {
+    list?.setAttribute('aria-busy', 'true');
+    dropzone?.setAttribute('aria-busy', 'true');
+    downloadAllBtn.setAttribute('aria-disabled', 'true');
+    retryFailedBtn.setAttribute('aria-disabled', 'true');
+  } else {
+    list?.removeAttribute('aria-busy');
+    dropzone?.removeAttribute('aria-busy');
+    downloadAllBtn.removeAttribute('aria-disabled');
+    retryFailedBtn.removeAttribute('aria-disabled');
+  }
+}
+
+function updateQualityUI() {
+  const format = (formatSelect.value as OutputFormat) ?? 'webp';
+  const isPng = format === 'png';
+  qualityInput.disabled = isPng;
+  qualityValue.textContent = isPng ? 'N/A' : qualityInput.value;
+}
+
 async function handleFiles(files: FileList | null) {
   if (!files || files.length === 0) return;
   const format = (formatSelect.value as OutputFormat) ?? 'webp';
   const quality = Number(qualityInput.value);
   const items = Array.from(files);
-  const results = await mapWithConcurrency(items, 4, (file) => processFile(file, format, quality));
+  const results = await mapWithConcurrency(items, DEFAULT_CONCURRENCY, (file) => processFile(file, format, quality));
   queue.push(...results);
   refreshList();
 }
@@ -224,7 +247,7 @@ function setupDnD() {
 function setupInputs() {
   fileInput.addEventListener('change', () => handleFiles(fileInput.files));
   qualityInput.addEventListener('input', () => {
-    qualityValue.textContent = qualityInput.value;
+    updateQualityUI();
   });
   qualityInput.addEventListener('change', () => {
     // 品質変更時は再エンコード
@@ -232,6 +255,7 @@ function setupInputs() {
   });
   formatSelect.addEventListener('change', () => {
     // 出力形式変更時は再エンコード
+    updateQualityUI();
     reprocessAll();
   });
   retryFailedBtn.addEventListener('click', () => {
@@ -241,6 +265,7 @@ function setupInputs() {
 
 async function downloadAll() {
   // 集合ZIPを作る
+  setGlobalBusy(true);
   const files: Record<string, Uint8Array> = {};
   for (const item of queue) {
     if (!item.processedBlob || !item.resultFilename) continue;
@@ -256,6 +281,7 @@ async function downloadAll() {
   a.download = 'images.zip';
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 0);
+  setGlobalBusy(false);
 }
 
 downloadAllBtn.addEventListener('click', () => {
@@ -269,10 +295,11 @@ async function reprocessAll() {
   if (isReprocessing || queue.length === 0) return;
   isReprocessing = true;
   downloadAllBtn.disabled = true;
+  setGlobalBusy(true);
   const format = (formatSelect.value as OutputFormat) ?? 'webp';
   const quality = Number(qualityInput.value);
   try {
-    await mapWithConcurrency(queue, 4, async (image) => {
+    await mapWithConcurrency(queue, DEFAULT_CONCURRENCY, async (image) => {
       try {
         const imgEl = await decodeFirstFrame(image.file);
         const canvas = createCanvasFromImage(imgEl);
@@ -292,6 +319,7 @@ async function reprocessAll() {
   } finally {
     isReprocessing = false;
     refreshList();
+    setGlobalBusy(false);
   }
 }
 
@@ -302,10 +330,11 @@ async function reprocessFailedOnly() {
   isReprocessing = true;
   downloadAllBtn.disabled = true;
   retryFailedBtn.disabled = true;
+  setGlobalBusy(true);
   const format = (formatSelect.value as OutputFormat) ?? 'webp';
   const quality = Number(qualityInput.value);
   try {
-    await mapWithConcurrency(failed, 4, async (image) => {
+    await mapWithConcurrency(failed, DEFAULT_CONCURRENCY, async (image) => {
       try {
         const imgEl = await decodeFirstFrame(image.file);
         const canvas = createCanvasFromImage(imgEl);
@@ -325,7 +354,19 @@ async function reprocessFailedOnly() {
   } finally {
     isReprocessing = false;
     refreshList();
+    setGlobalBusy(false);
   }
 }
+
+// 起動時UI同期とクリーンアップ
+updateQualityUI();
+window.addEventListener('beforeunload', () => {
+  for (const item of queue) {
+    try { URL.revokeObjectURL(item.originalUrl); } catch {}
+    if (item.processedUrl) {
+      try { URL.revokeObjectURL(item.processedUrl); } catch {}
+    }
+  }
+});
 
 

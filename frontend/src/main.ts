@@ -37,17 +37,15 @@ async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   const results: R[] = [];
   let nextIndex = 0;
-  async function run(): Promise<void> {
-    const current = nextIndex++;
-    if (current >= items.length) return;
-    const res = await worker(items[current], current);
-    results[current] = res;
-    await run();
+  async function runner(): Promise<void> {
+    while (true) {
+      const current = nextIndex++;
+      if (current >= items.length) break;
+      results[current] = await worker(items[current], current);
+    }
   }
-  const runners: Promise<void>[] = [];
   const parallel = Math.min(concurrency, items.length);
-  for (let i = 0; i < parallel; i++) runners.push(run());
-  await Promise.all(runners);
+  await Promise.all(Array.from({ length: parallel }, () => runner()))
   return results;
 }
 
@@ -87,21 +85,10 @@ function createCanvasFromImage(img: HTMLImageElement) {
   return canvas;
 }
 
-function readFileAsDataURL(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
-async function decodeFirstFrame(file: File): Promise<HTMLImageElement> {
-  // GIFはMVPで先頭フレームのみ
-  const dataUrl = await readFileAsDataURL(file);
+async function decodeImageFromUrl(url: string): Promise<HTMLImageElement> {
   const img = new Image();
   img.decoding = 'async';
-  img.src = dataUrl;
+  img.src = url;
   await img.decode();
   return img;
 }
@@ -128,7 +115,7 @@ async function processFile(file: File, format: OutputFormat, quality: number): P
   };
 
   try {
-    const img = await decodeFirstFrame(file);
+    const img = await decodeImageFromUrl(originalUrl);
     const canvas = createCanvasFromImage(img);
     const blob = await encodeCanvas(canvas, format, quality);
     const ext = getExtension(format);
@@ -159,7 +146,7 @@ function renderItem(img: QueuedImage) {
     <div class="meta">
       <div>元: ${formatBytes(img.originalSize)}${img.file.type ? ` (${img.file.type})` : ''}</div>
       <div>後: ${img.processedSize ? formatBytes(img.processedSize) : '-'}${img.processedBlob ? ` (${img.processedBlob.type})` : ''}</div>
-      ${img.error ? `<div style="color:#fca5a5">Error: ${img.error}</div>` : ''}
+      ${img.error ? `<div style="color:#fca5a5">エラー: ${img.error}</div>` : ''}
     </div>
     <div class="actions">
       <button data-action="download">個別DL</button>
@@ -222,6 +209,7 @@ function updateQualityUI() {
   const isPng = format === 'png';
   qualityInput.disabled = isPng;
   qualityValue.textContent = isPng ? 'N/A' : qualityInput.value;
+  qualityInput.title = isPng ? 'PNGでは品質設定は無効です' : '';
 }
 
 async function handleFiles(files: FileList | null) {
@@ -266,22 +254,27 @@ function setupInputs() {
 async function downloadAll() {
   // 集合ZIPを作る
   setGlobalBusy(true);
-  const files: Record<string, Uint8Array> = {};
-  for (const item of queue) {
-    if (!item.processedBlob || !item.resultFilename) continue;
-    const arrayBuffer = await item.processedBlob.arrayBuffer();
-    files[item.resultFilename] = new Uint8Array(arrayBuffer);
+  try {
+    const files: Record<string, Uint8Array> = {};
+    for (const item of queue) {
+      if (!item.processedBlob || !item.resultFilename) continue;
+      const arrayBuffer = await item.processedBlob.arrayBuffer();
+      files[item.resultFilename] = new Uint8Array(arrayBuffer);
+    }
+    const zipped: Uint8Array = await new Promise((resolve, reject) =>
+      zip(files, { level: 6 }, (err, data) => (err ? reject(err) : resolve(data!)))
+    );
+    const blob = new Blob([zipped], { type: 'application/zip' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'images.zip';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 0);
+  } catch (e) {
+    console.error('ZIP作成中にエラーが発生しました', e);
+  } finally {
+    setGlobalBusy(false);
   }
-  const zipped: Uint8Array = await new Promise((resolve, reject) =>
-    zip(files, { level: 6 }, (err, data) => (err ? reject(err) : resolve(data!)))
-  );
-  const blob = new Blob([zipped], { type: 'application/zip' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'images.zip';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 0);
-  setGlobalBusy(false);
 }
 
 downloadAllBtn.addEventListener('click', () => {
@@ -301,7 +294,7 @@ async function reprocessAll() {
   try {
     await mapWithConcurrency(queue, DEFAULT_CONCURRENCY, async (image) => {
       try {
-        const imgEl = await decodeFirstFrame(image.file);
+        const imgEl = await decodeImageFromUrl(image.originalUrl);
         const canvas = createCanvasFromImage(imgEl);
         const blob = await encodeCanvas(canvas, format, quality);
         if (image.processedUrl) URL.revokeObjectURL(image.processedUrl);
@@ -336,7 +329,7 @@ async function reprocessFailedOnly() {
   try {
     await mapWithConcurrency(failed, DEFAULT_CONCURRENCY, async (image) => {
       try {
-        const imgEl = await decodeFirstFrame(image.file);
+        const imgEl = await decodeImageFromUrl(image.originalUrl);
         const canvas = createCanvasFromImage(imgEl);
         const blob = await encodeCanvas(canvas, format, quality);
         if (image.processedUrl) URL.revokeObjectURL(image.processedUrl);

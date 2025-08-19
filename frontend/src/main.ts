@@ -1,6 +1,6 @@
 import { zipSync } from 'fflate';
 
-type OutputFormat = 'webp' | 'jpeg';
+type OutputFormat = 'webp' | 'jpeg' | 'png' | 'avif';
 
 type QueuedImage = {
   id: string;
@@ -24,6 +24,7 @@ const qualityInput = $('#quality') as HTMLInputElement;
 const qualityValue = $('#qualityValue');
 const formatSelect = $('#format') as HTMLSelectElement;
 const downloadAllBtn = $('#downloadAll') as HTMLButtonElement;
+const retryFailedBtn = $('#retryFailed') as HTMLButtonElement;
 
 const queue: QueuedImage[] = [];
 let isReprocessing = false;
@@ -66,7 +67,11 @@ async function decodeFirstFrame(file: File): Promise<HTMLImageElement> {
 }
 
 async function encodeCanvas(canvas: HTMLCanvasElement, format: OutputFormat, quality: number): Promise<Blob> {
-  const type = format === 'webp' ? 'image/webp' : 'image/jpeg';
+  const type =
+    format === 'webp' ? 'image/webp' :
+    format === 'jpeg' ? 'image/jpeg' :
+    format === 'png' ? 'image/png' :
+    'image/avif';
   const blob: Blob | null = await new Promise((resolve) =>
     canvas.toBlob(resolve, type, quality)
   );
@@ -87,7 +92,7 @@ async function processFile(file: File, format: OutputFormat, quality: number): P
     const img = await decodeFirstFrame(file);
     const canvas = createCanvasFromImage(img);
     const blob = await encodeCanvas(canvas, format, quality);
-    const ext = format === 'webp' ? 'webp' : 'jpg';
+    const ext = format === 'webp' ? 'webp' : format === 'jpeg' ? 'jpg' : format;
     const nameWithoutExt = file.name.replace(/\.[^.]+$/, '');
     image.processedBlob = blob;
     image.processedSize = blob.size;
@@ -155,6 +160,8 @@ function refreshList() {
 function updateDownloadAllState() {
   const hasAny = queue.some(q => q.processedBlob);
   downloadAllBtn.disabled = !hasAny;
+  const hasFailed = queue.some(q => q.error);
+  retryFailedBtn.disabled = !hasFailed;
 }
 
 async function handleFiles(files: FileList | null) {
@@ -189,6 +196,9 @@ function setupInputs() {
   formatSelect.addEventListener('change', () => {
     // 出力形式変更時は再エンコード
     reprocessAll();
+  });
+  retryFailedBtn.addEventListener('click', () => {
+    reprocessFailedOnly();
   });
 }
 
@@ -229,6 +239,40 @@ async function reprocessAll() {
         const blob = await encodeCanvas(canvas, format, quality);
         if (image.processedUrl) URL.revokeObjectURL(image.processedUrl);
         const ext = format === 'webp' ? 'webp' : 'jpg';
+        const nameWithoutExt = image.file.name.replace(/\.[^.]+$/, '');
+        image.processedBlob = blob;
+        image.processedSize = blob.size;
+        image.resultFilename = `${nameWithoutExt}.${ext}`;
+        image.processedUrl = URL.createObjectURL(blob);
+        image.error = undefined;
+      } catch (err) {
+        image.error = err instanceof Error ? err.message : 'Unknown error';
+      }
+    });
+    await Promise.all(tasks);
+  } finally {
+    isReprocessing = false;
+    refreshList();
+  }
+}
+
+async function reprocessFailedOnly() {
+  if (isReprocessing) return;
+  const failed = queue.filter(q => q.error);
+  if (failed.length === 0) return;
+  isReprocessing = true;
+  downloadAllBtn.disabled = true;
+  retryFailedBtn.disabled = true;
+  const format = (formatSelect.value as OutputFormat) ?? 'webp';
+  const quality = Number(qualityInput.value);
+  try {
+    const tasks = failed.map(async (image) => {
+      try {
+        const imgEl = await decodeFirstFrame(image.file);
+        const canvas = createCanvasFromImage(imgEl);
+        const blob = await encodeCanvas(canvas, format, quality);
+        if (image.processedUrl) URL.revokeObjectURL(image.processedUrl);
+        const ext = format === 'webp' ? 'webp' : format === 'jpeg' ? 'jpg' : format;
         const nameWithoutExt = image.file.name.replace(/\.[^.]+$/, '');
         image.processedBlob = blob;
         image.processedSize = blob.size;

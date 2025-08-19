@@ -1,0 +1,10 @@
+{
+  "name": "image-sharpener",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "npm --prefix frontend ci --no-audit --no-fund && npm --prefix frontend run build"
+  }
+}
+
+

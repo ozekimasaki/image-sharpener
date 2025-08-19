@@ -49,8 +49,11 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-const $ = <T extends HTMLElement>(selector: string) =>
-  document.querySelector(selector) as T;
+const $ = <T extends HTMLElement>(selector: string): T => {
+  const el = document.querySelector(selector);
+  if (!el) throw new Error(`Required element not found: ${selector}`);
+  return el as T;
+};
 
 const fileInput = $('#fileInput') as HTMLInputElement;
 const dropzone = $('#dropzone');

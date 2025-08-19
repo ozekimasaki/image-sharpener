@@ -1,4 +1,4 @@
-import { zipSync } from 'fflate';
+import { zip } from 'fflate';
 
 type OutputFormat = 'webp' | 'jpeg' | 'png' | 'avif';
 
@@ -13,6 +13,41 @@ type QueuedImage = {
   processedSize?: number;
   error?: string;
 };
+
+function getMimeType(format: OutputFormat): string {
+  return format === 'webp'
+    ? 'image/webp'
+    : format === 'jpeg'
+    ? 'image/jpeg'
+    : format === 'png'
+    ? 'image/png'
+    : 'image/avif';
+}
+
+function getExtension(format: OutputFormat): string {
+  return format === 'jpeg' ? 'jpg' : format;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  async function run(): Promise<void> {
+    const current = nextIndex++;
+    if (current >= items.length) return;
+    const res = await worker(items[current], current);
+    results[current] = res;
+    await run();
+  }
+  const runners: Promise<void>[] = [];
+  const parallel = Math.min(concurrency, items.length);
+  for (let i = 0; i < parallel; i++) runners.push(run());
+  await Promise.all(runners);
+  return results;
+}
 
 const $ = <T extends HTMLElement>(selector: string) =>
   document.querySelector(selector) as T;
@@ -67,15 +102,14 @@ async function decodeFirstFrame(file: File): Promise<HTMLImageElement> {
 }
 
 async function encodeCanvas(canvas: HTMLCanvasElement, format: OutputFormat, quality: number): Promise<Blob> {
-  const type =
-    format === 'webp' ? 'image/webp' :
-    format === 'jpeg' ? 'image/jpeg' :
-    format === 'png' ? 'image/png' :
-    'image/avif';
+  const type = getMimeType(format);
   const blob: Blob | null = await new Promise((resolve) =>
     canvas.toBlob(resolve, type, quality)
   );
   if (!blob) throw new Error('Failed to encode image');
+  if (blob.type !== type) {
+    throw new Error(`このブラウザは ${type} のエンコードに未対応です`);
+  }
   return blob;
 }
 
@@ -92,7 +126,7 @@ async function processFile(file: File, format: OutputFormat, quality: number): P
     const img = await decodeFirstFrame(file);
     const canvas = createCanvasFromImage(img);
     const blob = await encodeCanvas(canvas, format, quality);
-    const ext = format === 'webp' ? 'webp' : format === 'jpeg' ? 'jpg' : format;
+    const ext = getExtension(format);
     const nameWithoutExt = file.name.replace(/\.[^.]+$/, '');
     image.processedBlob = blob;
     image.processedSize = blob.size;
@@ -168,8 +202,8 @@ async function handleFiles(files: FileList | null) {
   if (!files || files.length === 0) return;
   const format = (formatSelect.value as OutputFormat) ?? 'webp';
   const quality = Number(qualityInput.value);
-  const tasks = Array.from(files).map(file => processFile(file, format, quality));
-  const results = await Promise.all(tasks);
+  const items = Array.from(files);
+  const results = await mapWithConcurrency(items, 4, (file) => processFile(file, format, quality));
   queue.push(...results);
   refreshList();
 }
@@ -210,12 +244,15 @@ async function downloadAll() {
     const arrayBuffer = await item.processedBlob.arrayBuffer();
     files[item.resultFilename] = new Uint8Array(arrayBuffer);
   }
-  const zipped = zipSync(files, { level: 6 });
+  const zipped: Uint8Array = await new Promise((resolve, reject) =>
+    zip(files, { level: 6 }, (err, data) => (err ? reject(err) : resolve(data!)))
+  );
   const blob = new Blob([zipped], { type: 'application/zip' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'images.zip';
   a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
 }
 
 downloadAllBtn.addEventListener('click', () => {
@@ -232,13 +269,13 @@ async function reprocessAll() {
   const format = (formatSelect.value as OutputFormat) ?? 'webp';
   const quality = Number(qualityInput.value);
   try {
-    const tasks = queue.map(async (image) => {
+    await mapWithConcurrency(queue, 4, async (image) => {
       try {
         const imgEl = await decodeFirstFrame(image.file);
         const canvas = createCanvasFromImage(imgEl);
         const blob = await encodeCanvas(canvas, format, quality);
         if (image.processedUrl) URL.revokeObjectURL(image.processedUrl);
-        const ext = format === 'webp' ? 'webp' : 'jpg';
+        const ext = getExtension(format);
         const nameWithoutExt = image.file.name.replace(/\.[^.]+$/, '');
         image.processedBlob = blob;
         image.processedSize = blob.size;
@@ -249,7 +286,6 @@ async function reprocessAll() {
         image.error = err instanceof Error ? err.message : 'Unknown error';
       }
     });
-    await Promise.all(tasks);
   } finally {
     isReprocessing = false;
     refreshList();
@@ -266,13 +302,13 @@ async function reprocessFailedOnly() {
   const format = (formatSelect.value as OutputFormat) ?? 'webp';
   const quality = Number(qualityInput.value);
   try {
-    const tasks = failed.map(async (image) => {
+    await mapWithConcurrency(failed, 4, async (image) => {
       try {
         const imgEl = await decodeFirstFrame(image.file);
         const canvas = createCanvasFromImage(imgEl);
         const blob = await encodeCanvas(canvas, format, quality);
         if (image.processedUrl) URL.revokeObjectURL(image.processedUrl);
-        const ext = format === 'webp' ? 'webp' : format === 'jpeg' ? 'jpg' : format;
+        const ext = getExtension(format);
         const nameWithoutExt = image.file.name.replace(/\.[^.]+$/, '');
         image.processedBlob = blob;
         image.processedSize = blob.size;
@@ -283,7 +319,6 @@ async function reprocessFailedOnly() {
         image.error = err instanceof Error ? err.message : 'Unknown error';
       }
     });
-    await Promise.all(tasks);
   } finally {
     isReprocessing = false;
     refreshList();

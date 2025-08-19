@@ -3,7 +3,7 @@ main = "worker/src/index.ts"
 compatibility_date = "2024-08-01"
 
 [build]
-command = "echo 'No build for worker placeholder'"
+command = "npm --prefix frontend ci --no-audit --no-fund && npm --prefix frontend run build"
 
 [site]
 bucket = "frontend/dist"

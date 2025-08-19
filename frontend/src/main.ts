@@ -26,6 +26,7 @@ const formatSelect = $('#format') as HTMLSelectElement;
 const downloadAllBtn = $('#downloadAll') as HTMLButtonElement;
 
 const queue: QueuedImage[] = [];
+let isReprocessing = false;
 
 function formatBytes(bytes: number) {
   if (bytes === 0) return '0 B';
@@ -181,6 +182,14 @@ function setupInputs() {
   qualityInput.addEventListener('input', () => {
     qualityValue.textContent = qualityInput.value;
   });
+  qualityInput.addEventListener('change', () => {
+    // 品質変更時は再エンコード
+    reprocessAll();
+  });
+  formatSelect.addEventListener('change', () => {
+    // 出力形式変更時は再エンコード
+    reprocessAll();
+  });
 }
 
 async function downloadAll() {
@@ -205,5 +214,36 @@ downloadAllBtn.addEventListener('click', () => {
 
 setupDnD();
 setupInputs();
+
+async function reprocessAll() {
+  if (isReprocessing || queue.length === 0) return;
+  isReprocessing = true;
+  downloadAllBtn.disabled = true;
+  const format = (formatSelect.value as OutputFormat) ?? 'webp';
+  const quality = Number(qualityInput.value);
+  try {
+    const tasks = queue.map(async (image) => {
+      try {
+        const imgEl = await decodeFirstFrame(image.file);
+        const canvas = createCanvasFromImage(imgEl);
+        const blob = await encodeCanvas(canvas, format, quality);
+        if (image.processedUrl) URL.revokeObjectURL(image.processedUrl);
+        const ext = format === 'webp' ? 'webp' : 'jpg';
+        const nameWithoutExt = image.file.name.replace(/\.[^.]+$/, '');
+        image.processedBlob = blob;
+        image.processedSize = blob.size;
+        image.resultFilename = `${nameWithoutExt}.${ext}`;
+        image.processedUrl = URL.createObjectURL(blob);
+        image.error = undefined;
+      } catch (err) {
+        image.error = err instanceof Error ? err.message : 'Unknown error';
+      }
+    });
+    await Promise.all(tasks);
+  } finally {
+    isReprocessing = false;
+    refreshList();
+  }
+}
 
 

@@ -1,0 +1,85 @@
+:root {
+  --bg: #0f172a;
+  --panel: #111827;
+  --text: #e5e7eb;
+  --subtext: #9ca3af;
+  --accent: #22c55e;
+  --accent-2: #38bdf8;
+  --border: #1f2937;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  background: var(--bg);
+  color: var(--text);
+}
+
+.header {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 20px 16px;
+}
+
+.container {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 0 16px 48px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.uploader {
+  background: var(--panel);
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  text-align: center;
+  position: relative;
+}
+
+.uploader input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.uploader:focus { outline: 2px solid var(--accent-2); }
+
+.hint { color: var(--subtext); margin: 0; }
+
+.controls {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.control label { display: block; margin-bottom: 6px; color: var(--subtext); }
+.control input[type="range"] { width: 100%; }
+.control button { width: 100%; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: #1f2937; color: var(--text); cursor: pointer; }
+.control button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+.item { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: grid; gap: 8px; }
+.thumbs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.thumbs figure { margin: 0; }
+.thumbs img { width: 100%; height: 140px; object-fit: contain; background: #0b1220; border: 1px solid var(--border); border-radius: 6px; }
+.meta { font-size: 12px; color: var(--subtext); display: grid; gap: 4px; }
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.actions button { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: #1f2937; color: var(--text); cursor: pointer; }
+
+@media (max-width: 720px) {
+  .controls { grid-template-columns: 1fr; }
+}
+
+

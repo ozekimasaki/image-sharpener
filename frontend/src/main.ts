@@ -1,6 +1,5 @@
 import { zip } from 'fflate';
-
-type OutputFormat = 'webp' | 'jpeg' | 'png' | 'avif';
+import { browserCapabilities, type OutputFormat, type FormatInfo } from './browserCapabilities.js';
 
 type QueuedImage = {
   id: string;
@@ -12,6 +11,11 @@ type QueuedImage = {
   originalSize: number;
   processedSize?: number;
   error?: string;
+  usedFallback?: {
+    requestedFormat: OutputFormat;
+    actualFormat: OutputFormat;
+    reason: string;
+  };
 };
 
 const DEFAULT_CONCURRENCY = Math.min(6, Math.max(1, navigator.hardwareConcurrency || 4));
@@ -63,6 +67,9 @@ const qualityValue = $('#qualityValue');
 const formatSelect = $('#format') as HTMLSelectElement;
 const downloadAllBtn = $('#downloadAll') as HTMLButtonElement;
 const retryFailedBtn = $('#retryFailed') as HTMLButtonElement;
+const showCompatibilityBtn = $('#showCompatibility') as HTMLButtonElement;
+const browserCompatibilitySection = $('#browserCompatibility') as HTMLElement;
+const compatibilityInfo = $('#compatibilityInfo') as HTMLElement;
 
 const queue: QueuedImage[] = [];
 let isReprocessing = false;
@@ -93,16 +100,89 @@ async function decodeImageFromUrl(url: string): Promise<HTMLImageElement> {
   return img;
 }
 
-async function encodeCanvas(canvas: HTMLCanvasElement, format: OutputFormat, quality: number): Promise<Blob> {
-  const type = getMimeType(format);
-  const blob: Blob | null = await new Promise((resolve) =>
-    canvas.toBlob(resolve, type, quality)
-  );
-  if (!blob) throw new Error('Failed to encode image');
-  if (blob.type !== type) {
-    throw new Error(`このブラウザは ${type} のエンコードに未対応です`);
+async function encodeCanvas(
+  canvas: HTMLCanvasElement, 
+  format: OutputFormat, 
+  quality: number
+): Promise<{ blob: Blob; actualFormat: OutputFormat; usedFallback?: { requestedFormat: OutputFormat; reason: string } }> {
+  // 指定形式が対応しているかチェック
+  const isSupported = await browserCapabilities.isFormatSupported(format);
+  let actualFormat = format;
+  let usedFallback: { requestedFormat: OutputFormat; reason: string } | undefined;
+  
+  if (!isSupported) {
+    // フォールバック形式を決定
+    actualFormat = await browserCapabilities.getBestFallbackFormat(format);
+    usedFallback = {
+      requestedFormat: format,
+      reason: `${format.toUpperCase()}未対応のため${actualFormat.toUpperCase()}で出力`
+    };
   }
-  return blob;
+  
+  const type = getMimeType(actualFormat);
+  
+  try {
+    const blob: Blob | null = await new Promise((resolve) =>
+      canvas.toBlob(resolve, type, quality)
+    );
+    
+    if (!blob) {
+      throw new Error(`Failed to encode image as ${actualFormat}`);
+    }
+    
+    // エンコード結果の検証
+    if (blob.type !== type) {
+      // 予期しない形式の場合、さらにフォールバックを試行
+      if (actualFormat !== 'jpeg') {
+        const fallbackBlob: Blob | null = await new Promise((resolve) =>
+          canvas.toBlob(resolve, 'image/jpeg', quality)
+        );
+        
+        if (fallbackBlob && fallbackBlob.type === 'image/jpeg') {
+          return {
+            blob: fallbackBlob,
+            actualFormat: 'jpeg',
+            usedFallback: {
+              requestedFormat: format,
+              reason: `${actualFormat.toUpperCase()}エンコード失敗のためJPEGで出力`
+            }
+          };
+        }
+      }
+      
+      throw new Error(`エンコード結果の形式が不正です: 期待=${type}, 実際=${blob.type}`);
+    }
+    
+    return { blob, actualFormat, usedFallback };
+    
+  } catch (err) {
+    if (actualFormat === 'jpeg') {
+      // JPEG でも失敗した場合は諦める
+      throw err;
+    }
+    
+    // JPEG でリトライ
+    try {
+      const fallbackBlob: Blob | null = await new Promise((resolve) =>
+        canvas.toBlob(resolve, 'image/jpeg', quality)
+      );
+      
+      if (!fallbackBlob) {
+        throw new Error('JPEG エンコードも失敗しました');
+      }
+      
+      return {
+        blob: fallbackBlob,
+        actualFormat: 'jpeg',
+        usedFallback: {
+          requestedFormat: format,
+          reason: `${actualFormat.toUpperCase()}エンコード失敗のためJPEGで出力`
+        }
+      };
+    } catch {
+      throw new Error(`画像のエンコードに失敗しました: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  }
 }
 
 async function processFile(file: File, format: OutputFormat, quality: number): Promise<QueuedImage> {
@@ -117,13 +197,26 @@ async function processFile(file: File, format: OutputFormat, quality: number): P
   try {
     const img = await decodeImageFromUrl(originalUrl);
     const canvas = createCanvasFromImage(img);
-    const blob = await encodeCanvas(canvas, format, quality);
-    const ext = getExtension(format);
+    const result = await encodeCanvas(canvas, format, quality);
+    
+    const actualFormat = result.actualFormat;
+    const ext = getExtension(actualFormat);
     const nameWithoutExt = file.name.replace(/\.[^.]+$/, '');
-    image.processedBlob = blob;
-    image.processedSize = blob.size;
+    
+    image.processedBlob = result.blob;
+    image.processedSize = result.blob.size;
     image.resultFilename = `${nameWithoutExt}.${ext}`;
-    image.processedUrl = URL.createObjectURL(blob);
+    image.processedUrl = URL.createObjectURL(result.blob);
+    
+    // フォールバック情報を保存
+    if (result.usedFallback) {
+      image.usedFallback = {
+        requestedFormat: result.usedFallback.requestedFormat,
+        actualFormat: actualFormat,
+        reason: result.usedFallback.reason
+      };
+    }
+    
   } catch (err) {
     image.error = err instanceof Error ? err.message : 'Unknown error';
   }
@@ -134,6 +227,12 @@ function renderItem(img: QueuedImage) {
   const el = document.createElement('article');
   el.className = 'item';
   el.dataset.id = img.id;
+  
+  // フォールバック情報の表示
+  const fallbackInfo = img.usedFallback 
+    ? `<div class="fallback-notice">⚠️ ${img.usedFallback.reason}</div>`
+    : '';
+  
   el.innerHTML = `
     <div class="thumbs">
       <figure>
@@ -147,6 +246,7 @@ function renderItem(img: QueuedImage) {
       <div>元: ${formatBytes(img.originalSize)}${img.file.type ? ` (${img.file.type})` : ''}</div>
       <div>後: ${img.processedSize ? formatBytes(img.processedSize) : '-'}${img.processedBlob ? ` (${img.processedBlob.type})` : ''}</div>
       ${img.error ? `<div style="color:#fca5a5">エラー: ${img.error}</div>` : ''}
+      ${fallbackInfo}
     </div>
     <div class="actions">
       <button data-action="download">個別DL</button>
@@ -249,6 +349,15 @@ function setupInputs() {
   retryFailedBtn.addEventListener('click', () => {
     reprocessFailedOnly();
   });
+  
+  // ブラウザ対応状況表示ボタン
+  showCompatibilityBtn.addEventListener('click', () => {
+    if (browserCompatibilitySection.style.display === 'none' || browserCompatibilitySection.style.display === '') {
+      showBrowserCompatibility();
+    } else {
+      hideBrowserCompatibility();
+    }
+  });
 }
 
 async function downloadAll() {
@@ -296,17 +405,34 @@ async function reprocessAll() {
       try {
         const imgEl = await decodeImageFromUrl(image.originalUrl);
         const canvas = createCanvasFromImage(imgEl);
-        const blob = await encodeCanvas(canvas, format, quality);
+        const result = await encodeCanvas(canvas, format, quality);
+        
         if (image.processedUrl) URL.revokeObjectURL(image.processedUrl);
-        const ext = getExtension(format);
+        
+        const actualFormat = result.actualFormat;
+        const ext = getExtension(actualFormat);
         const nameWithoutExt = image.file.name.replace(/\.[^.]+$/, '');
-        image.processedBlob = blob;
-        image.processedSize = blob.size;
+        
+        image.processedBlob = result.blob;
+        image.processedSize = result.blob.size;
         image.resultFilename = `${nameWithoutExt}.${ext}`;
-        image.processedUrl = URL.createObjectURL(blob);
+        image.processedUrl = URL.createObjectURL(result.blob);
         image.error = undefined;
+        
+        // フォールバック情報を更新
+        if (result.usedFallback) {
+          image.usedFallback = {
+            requestedFormat: result.usedFallback.requestedFormat,
+            actualFormat: actualFormat,
+            reason: result.usedFallback.reason
+          };
+        } else {
+          image.usedFallback = undefined;
+        }
+        
       } catch (err) {
         image.error = err instanceof Error ? err.message : 'Unknown error';
+        image.usedFallback = undefined;
       }
     });
   } finally {
@@ -331,17 +457,34 @@ async function reprocessFailedOnly() {
       try {
         const imgEl = await decodeImageFromUrl(image.originalUrl);
         const canvas = createCanvasFromImage(imgEl);
-        const blob = await encodeCanvas(canvas, format, quality);
+        const result = await encodeCanvas(canvas, format, quality);
+        
         if (image.processedUrl) URL.revokeObjectURL(image.processedUrl);
-        const ext = getExtension(format);
+        
+        const actualFormat = result.actualFormat;
+        const ext = getExtension(actualFormat);
         const nameWithoutExt = image.file.name.replace(/\.[^.]+$/, '');
-        image.processedBlob = blob;
-        image.processedSize = blob.size;
+        
+        image.processedBlob = result.blob;
+        image.processedSize = result.blob.size;
         image.resultFilename = `${nameWithoutExt}.${ext}`;
-        image.processedUrl = URL.createObjectURL(blob);
+        image.processedUrl = URL.createObjectURL(result.blob);
         image.error = undefined;
+        
+        // フォールバック情報を更新
+        if (result.usedFallback) {
+          image.usedFallback = {
+            requestedFormat: result.usedFallback.requestedFormat,
+            actualFormat: actualFormat,
+            reason: result.usedFallback.reason
+          };
+        } else {
+          image.usedFallback = undefined;
+        }
+        
       } catch (err) {
         image.error = err instanceof Error ? err.message : 'Unknown error';
+        image.usedFallback = undefined;
       }
     });
   } finally {
@@ -351,8 +494,94 @@ async function reprocessFailedOnly() {
   }
 }
 
-// 起動時UI同期とクリーンアップ
-updateQualityUI();
+// 起動時UI同期、ブラウザ機能検出、クリーンアップ
+async function initializeApp() {
+  // ブラウザ機能検出
+  try {
+    const formatInfos = await browserCapabilities.getFormatInfoList();
+    updateFormatSelector(formatInfos);
+  } catch (error) {
+    console.warn('ブラウザ機能検出に失敗しました:', error);
+  }
+  
+  updateQualityUI();
+}
+
+// フォーマットセレクターの更新
+function updateFormatSelector(formatInfos: FormatInfo[]) {
+  // 現在の選択を保存
+  const currentValue = formatSelect.value;
+  
+  // オプションをクリア
+  formatSelect.innerHTML = '';
+  
+  // 新しいオプションを追加
+  formatInfos.forEach(info => {
+    const option = document.createElement('option');
+    option.value = info.format;
+    
+    // ラベルにサポート状況を追加
+    let label = info.label;
+    if (!info.supported && info.fallbackInfo) {
+      label += ` → ${info.fallbackInfo.format.toUpperCase()}自動切替`;
+    }
+    
+    option.textContent = label;
+    option.disabled = false; // 全て有効にする（フォールバックがあるため）
+    
+    formatSelect.appendChild(option);
+  });
+  
+  // 元の選択を復元（可能なら）
+  if (Array.from(formatSelect.options).some(opt => opt.value === currentValue)) {
+    formatSelect.value = currentValue;
+  }
+}
+
+// ブラウザ対応状況の表示
+async function showBrowserCompatibility() {
+  try {
+    const formatInfos = await browserCapabilities.getFormatInfoList();
+    const support = await browserCapabilities.detectSupport();
+    
+    let html = '<table class="compatibility-table">';
+    html += '<thead><tr><th>形式</th><th>対応状況</th><th>備考</th></tr></thead>';
+    html += '<tbody>';
+    
+    formatInfos.forEach(info => {
+      const statusIcon = info.supported ? '✅' : '❌';
+      const statusText = info.supported ? '対応' : '未対応';
+      const notes = info.fallbackInfo ? info.fallbackInfo.reason : '-';
+      
+      html += `<tr>`;
+      html += `<td><strong>${info.format.toUpperCase()}</strong></td>`;
+      html += `<td>${statusIcon} ${statusText}</td>`;
+      html += `<td>${notes}</td>`;
+      html += `</tr>`;
+    });
+    
+    html += '</tbody></table>';
+    html += `<p class="browser-info">ブラウザ: ${navigator.userAgent.split(' ').slice(-2).join(' ')}</p>`;
+    
+    compatibilityInfo.innerHTML = html;
+    browserCompatibilitySection.style.display = 'block';
+    showCompatibilityBtn.textContent = 'ブラウザ対応状況を隠す';
+    
+  } catch (error) {
+    compatibilityInfo.innerHTML = '<p style="color: #fca5a5;">ブラウザ対応状況の取得に失敗しました。</p>';
+    browserCompatibilitySection.style.display = 'block';
+  }
+}
+
+// ブラウザ対応状況の非表示
+function hideBrowserCompatibility() {
+  browserCompatibilitySection.style.display = 'none';
+  showCompatibilityBtn.textContent = 'ブラウザ対応状況を表示';
+}
+
+// アプリを初期化
+initializeApp();
+
 window.addEventListener('beforeunload', () => {
   for (const item of queue) {
     try { URL.revokeObjectURL(item.originalUrl); } catch {}

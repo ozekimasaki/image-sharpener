@@ -1,5 +1,5 @@
 {
-  "extends": ["oxlint:recommended"],
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
   "env": {
     "browser": true,
     "node": true,
@@ -9,5 +9,3 @@
     "eqeqeq": "warn"
   }
 }
-
-

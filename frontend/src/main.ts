@@ -168,7 +168,7 @@ async function encodeCanvas(
       );
       
       if (!fallbackBlob) {
-        throw new Error('JPEG エンコードも失敗しました');
+        throw new Error('JPEG エンコードも失敗しました', { cause: err });
       }
       
       return {
@@ -180,7 +180,7 @@ async function encodeCanvas(
         }
       };
     } catch {
-      throw new Error(`画像のエンコードに失敗しました: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      throw new Error(`画像のエンコードに失敗しました: ${err instanceof Error ? err.message : 'Unknown error'}`, { cause: err });
     }
   }
 }
@@ -542,8 +542,7 @@ function updateFormatSelector(formatInfos: FormatInfo[]) {
 async function showBrowserCompatibility() {
   try {
     const formatInfos = await browserCapabilities.getFormatInfoList();
-    const support = await browserCapabilities.detectSupport();
-    
+
     let html = '<table class="compatibility-table">';
     html += '<thead><tr><th>形式</th><th>対応状況</th><th>備考</th></tr></thead>';
     html += '<tbody>';
@@ -567,7 +566,7 @@ async function showBrowserCompatibility() {
     browserCompatibilitySection.style.display = 'block';
     showCompatibilityBtn.textContent = 'ブラウザ対応状況を隠す';
     
-  } catch (error) {
+  } catch {
     compatibilityInfo.innerHTML = '<p style="color: #fca5a5;">ブラウザ対応状況の取得に失敗しました。</p>';
     browserCompatibilitySection.style.display = 'block';
   }

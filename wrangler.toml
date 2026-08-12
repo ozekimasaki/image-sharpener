@@ -1,7 +1,7 @@
 # wrangler.toml
 name = 'image-sharpener'
 main = "worker/src/index.ts"
-compatibility_date = "2024-08-01"
+compatibility_date = "2026-08-12"
 
 [build]
 command = "npm --prefix frontend ci --no-audit --no-fund && npm --prefix frontend run build"
@@ -9,5 +9,3 @@ command = "npm --prefix frontend ci --no-audit --no-fund && npm --prefix fronten
 [assets]
 directory = "frontend/dist"
 binding = "ASSETS"
-
-
